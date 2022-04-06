@@ -366,6 +366,13 @@ if __name__ == "__main__":
         action="store_true",
     )
     group.add_argument(
+        "--union_grn",
+        dest="union_grn",
+        help="Custom .txt file with union of edges of multiple networks",
+        metavar="FILE",
+        default=None,
+    )
+    group.add_argument(
         "-j",
         "--padj",
         dest="padj_cutoff",
