@@ -207,30 +207,26 @@ def difference(
     sort_by="prob",
     full_output=False,
     select_after_join=False,
+    union_grn=None,
 ):
     """
     Calculate the network different between two GRNs.
-
     First take the nodes from both networks, and add
     edges from the target network that are missing in the source network.
     Then add edges present in both but with a higher interaction
     score in the target network.
     """
-
     # read GRN files
     logger.info("Loading source network.")
     source = read_network(grn_source, full_output)
-    if edges and not select_after_join:
-        source = source.sort_values(sort_by).tail(edges)
-    source.rename(columns=GRN_COLUMNS, inplace=True)
 
+    if edges and not select_after_join and not union_grn:
+        source = source.sort_values(sort_by).tail(edges)
+
+    source.rename(columns=GRN_COLUMNS, inplace=True)
     logger.info("Loading target network.")
     target = read_network(grn_target, full_output)
-    if edges and not select_after_join:
-        logger.info(f"    Selecting top {edges} edges before calculating difference")
-        target = target.sort_values(sort_by).tail(edges)
     target.rename(columns=GRN_COLUMNS, inplace=True)
-
     # Calculate difference
     logger.info("Calculating differential network.")
     # Fill weight not present in source network with 0
@@ -239,14 +235,21 @@ def difference(
         diff_network["weight_target"] - diff_network["weight_source"]
     )
 
+# Overwrite standard number of edges if union_grn is supplied
+    if union_grn:
+        logger.info(f"    Overwriting standard supplied number of edges due to supplied union_grn file")
+        edges=None
+
+# Raise errors if select_after_join and union_grn or edges parameters are used at the same time
+    if select_after_join and union_grn:
+        raise ValueError("Contradictory edge selection:", "Can not use custom number of edges and union of edges at the same time")
+
     # Only keep edges that are higher in target network
     diff_network = diff_network[diff_network["weight"] > 0]
-
     if not full_output:
         diff_network.drop(columns=["weight_target", "weight_source"], inplace=True)
-
     # Only keep top edges
-    if edges and select_after_join:
+    if edges and select_after_join and not union_grn:
         logger.info(f"    Selecting top {edges} edges after calculating difference")
         sort_by = GRN_COLUMNS.get(sort_by, sort_by)
         if sort_by != "weight":
@@ -255,6 +258,30 @@ def difference(
             )
         diff_network = diff_network.sort_values(sort_by).tail(edges)
 
+    if edges and not select_after_join and not union_grn:
+        logger.info(f"    Selecting top {edges} edges before calculating difference")
+        target = target.sort_values(sort_by).tail(edges)
+
+    if not edges and not select_after_join and union_grn:
+        logger.info(f"    Selecting the union of edges file: {union_grn} after calculating difference")
+        sort_by = GRN_COLUMNS.get(sort_by, sort_by)
+        if sort_by != "weight":
+            diff_network[sort_by] = (
+                diff_network[f"{sort_by}_target"] - diff_network[f"{sort_by}_source"]
+            )
+        union_edges = pd.read_csv(union_grn, sep=" ", header=None, names=['tf_target'])
+        sel=set(union_edges['tf_target'].tolist()).intersection(set(list(diff_network.index.values)))
+        sel=list(sel)
+        #print(len(sel))
+        diff_network = diff_network.loc[pd.Index(sel)]
+        #print(diff_network.head())
+
+    #print(union_edges.head())
+    #diff_network = diff_network.loc[.isin(union_edges)]
+    #diff_network = diff_network.loc[list(diff_network.index.values).isin(union_edges['tf_target'])]
+
+
+#############################################################################################
     # split the transcription factor and target gene into 2 columns, make sure they end up
     # in the first columns
     source_target = (
@@ -264,16 +291,12 @@ def difference(
     )
     diff_network = pd.concat((source_target, diff_network), axis=1)
     diff_network.reset_index(drop=True, inplace=True)
-
     if outfile:
         logger.info("Saving differential network.")
         diff_network.to_csv(outfile, sep="\t", index=False)
-
     # load into a network with TFs and TGs as nodes, and the interaction scores as edges
     grn = nx.from_pandas_edgelist(diff_network, edge_attr=True, create_using=nx.DiGraph)
-
     return grn
-
 
 def target_score(expression_change, targets):
     """
@@ -416,12 +439,14 @@ class Influence(object):
         padj_cutoff=0.05,
         full_output=False,
         select_after_join=False,
+        union_grn=None, # adjusted
     ):
         self.ncore = ncore
         self.gene_gtf = gene_gtf
         self.full_output = full_output
         self.outfile = outfile
         self.filter_tfs = filter_tfs
+        self.union_grn = union_grn # adjusted
 
         # Load GRNs
         if grn_target_file is None:
@@ -449,6 +474,7 @@ class Influence(object):
                 sort_by,
                 full_output,
                 select_after_join,
+                union_grn,
             )
 
             if len(self.grn.edges) == 0:
